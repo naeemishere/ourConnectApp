@@ -1,0 +1,385 @@
+// 1-97 postController.js
+
+const Post = require('../models/Post')
+
+exports.viewCreateScreen = function (req, res) {
+    res.render('create-post')
+}
+
+exports.create = function(req, res) {
+    let post = new Post(req.body, req.session.user._id)
+    post.create().then(function(newId) {
+      req.flash('success', 'New post successfully created.')  
+      req.session.save(() => res.redirect(`/post/${newId}`))
+    }).catch(function(errors) {
+      errors.forEach(error => req.flash("errors", error))
+      req.session.save(() => res.redirect("/create-post"))
+    })
+}
+
+exports.apiCreate = function(req, res) {
+  let post = new Post(req.body, req.apiUser._id)
+  post.create().then(function(newId) {
+    res.json("Congrats!")
+  }).catch(function(errors) {
+    res.json(errors)
+  })
+}
+
+
+
+exports.viewSingle =  async function(req, res) {
+  try {
+    let post = await Post.findSingleById(req.params.id, req.visitorId)
+    res.render('single-post-screen', {post: post, title: post.title})
+  } catch {
+    res.render('404')
+  }
+}
+
+exports.viewEditScreen = async function(req, res) {
+  try {
+    let post = await Post.findSingleById(req.params.id, req.visitorId)
+    if (post.isVisitorOwner) {
+      res.render("edit-post", {post: post})
+    } else {
+      req.flash("errors", "You do not have permission to perform that action.")
+      req.session.save(() => res.redirect("/"))
+    }
+  } catch {
+    res.render("404")
+  }
+}
+
+exports.edit = function(req, res) {
+  let post = new Post(req.body, req.visitorId, req.params.id)
+  post.update().then((status) => {
+  // the post was successfully updated in the database
+  // or user did have permission, but there were validation errors
+  if (status == 'success') {
+   // post was updated in db
+   req.flash('success', 'Post successfully updated.')
+   req.session.save(function() {
+    res.redirect(`/post/${req.params.id}/edit`)
+  })
+  } else {
+  post.errors.forEach(function(error) {
+    req.flash('errors', error)
+  })
+  req.session.save(function() {
+    res.redirect(`/post/${req.params.id}/edit`)
+  })
+  }
+  }).catch(() => {
+    // a post with the requested id doesn't exist
+    // or if the current visitor is not the owner of the requested post
+    req.flash("errors", "You do not have permission to perform that action.")
+    req.session.save(function() {
+      res.redirect("/")
+    })
+  })
+}
+
+exports.delete = function (req, res) {
+  Post.delete(req.params.id, req.visitorId).then(() => {
+    req.flash("success", "Post successfully deleted!")
+    req.session.save(() => res.redirect(`/profile/${req.session.user.username}`))
+  }).catch(() => {
+    req.flash('errors', 'You do not have permission to perform that action')
+    req.session.save(() => res.redirect('/'))
+  })
+}
+
+exports.search = function (req, res) {
+  Post.search(req.body.searchTerm).then(posts => {
+    res.json(posts)
+  }).catch(() => {
+    res.json([])
+  })
+}
+
+
+// 105-285 userController.js
+
+
+const User = require('../models/User');
+const Post = require('../models/Post');
+const Follow = require('../models/Follow')
+const jwt = require('jsonwebtoken')
+
+
+exports.apiMustbeLoggedIn = function(req, res, next) {
+ try {
+  req.apiUser = jwt.verify(req.body.token, process.env.JWTSECRET)
+  next()
+ } catch {
+  res.json("You must provide a valid token!")
+ }
+}
+
+exports.doesUsernameExist = function(req, res) {
+ User.findByUsername(req.body.username).then(function() {
+  res.json(true)
+ }).catch(function() {
+  res.json(false)  
+ })
+}
+
+exports.doesEmailExist = async function (req, res) {
+ let emailBool = await User.doesEmailExist(req.body.email)
+ res.json(emailBool)
+}
+
+exports.sharedProfileData = async function(req, res, next) {
+  let isVisitorsProfile = false 
+  let isFollowing = false 
+  if (req.session.user) {
+    isVisitorsProfile = req.profileUser._id.equals(req.session.user._id)
+    isFollowing = await Follow.isVisitorFollowing(req.profileUser._id, req.visitorId)
+  }  
+  req.isVisitorsProfile = isVisitorsProfile 
+  req.isFollowing = isFollowing
+  // Retrieve post, follower, and following counts
+  let postCountPromise = Post.countPostsByAuthor(req.profileUser._id)
+  let followerCountPromise = Follow.countFollowersById(req.profileUser._id)
+  let followingCountPromise = Follow.countFollowingById(req.profileUser._id)
+  let [postCount, followerCount, followingCount] = await Promise.all([postCountPromise, followerCountPromise, followingCountPromise])
+
+  req.postCount = postCount
+  req.followerCount = followerCount
+  req.followingCount = followingCount
+ 
+  next()
+}
+
+exports.mustBeLoggedIn = function (req, res, next) {
+    if (req.session.user) {
+        next()
+    } else {
+    req.flash('errors', 'YOU MUST BE LOGGED IN!')
+    req.session.save(function() {
+        res.redirect('/')
+    })
+    }
+}
+
+exports.login = function(req, res) {
+    let user = new User(req.body)
+    user.login().then(function(result) {
+        req.session.user = {avatar: user.avatar, username: user.data.username, _id: user.data._id}
+        req.session.save(function() {
+            res.redirect('/')
+        })
+    }).catch(function(e) {
+        req.flash('errors', e)
+        req.session.save(function () {
+            res.redirect('/')
+        })
+    })
+} 
+
+exports.apiLogin = function(req, res) {
+  let user = new User(req.body)
+  user.login().then(function(result) {
+     res.json(jwt.sign({_id: user.data._id}, process.env.JWTSECRET, {expiresIn: '7d'}))
+  }).catch(function(e) {
+     res.json("Not Good Job!")
+  })
+} 
+
+
+exports.logout = function(req, res) {
+    req.session.destroy(function() {
+        res.redirect('/')
+    })
+} 
+
+exports.register = function(req, res) {
+    let user = new User(req.body)
+    user.register().then( () => {
+        req.session.user = {username: user.data.username, avatar: user.avatar, _id: user.data._id}
+
+        
+        req.session.save(function() {
+            res.redirect('/')
+        }) 
+    } ).catch( (regErrors) => {
+        regErrors.forEach(function (error) {
+            req.flash('regErrors', error)
+        })
+        req.session.save(function() {
+            res.redirect('/')
+        }) 
+    })
+} 
+
+exports.home = async function(req,res) {
+    if (req.session.user) {
+      // fetch feed of posts for current user
+      let posts = await Post.getFeed(req.session.user._id)
+     res.render('home-dashboard', {posts: posts})
+     } else {
+     res.render('home-guest', {regErrors: req.flash('regErrors')})
+    }
+} 
+
+exports.ifUserExists = function (req, res, next) {
+    User.findByUsername(req.params.username).then(function(userDocument) {
+      req.profileUser = userDocument
+      next()
+    }).catch(function() {
+        res.render('404')
+    })
+}
+
+exports.profilePostsScreen = function (req, res) {
+    // Ask our post model for posts by a certain author id
+    Post.findByAuthorId(req.profileUser._id).then(function(posts) {
+      res.render('profile', {
+        titile: `Profile for ${req.profileUser.username}`,
+        currentPage: "posts",
+        posts: posts,
+        profileUsername: req.profileUser.username,
+        profileAvatar:   req.profileUser.avatar, 
+        isFollowing:     req.isFollowing,
+        isVisitorsProfile: req.isVisitorsProfile,
+        counts: {postCount: req.postCount, followerCount: req.followerCount, followingCount: req.followingCount}
+      })
+    }).catch(function() {
+       res.render('404')
+    })
+}
+
+exports.profileFollowersScreen = async function (req, res) {
+  try {
+    let followers = await Follow.getFollowersById(req.profileUser._id)
+    res.render('profile-followers', {
+        currentPage: "followers",
+        followers: followers,
+        profileUsername: req.profileUser.username,
+        profileAvatar:   req.profileUser.avatar, 
+        isFollowing:     req.isFollowing,
+        isVisitorsProfile: req.isVisitorsProfile,
+        counts: {postCount: req.postCount, followerCount: req.followerCount, followingCount: req.followingCount}
+    })
+  } catch {
+    res.render('404')
+  }
+}
+
+exports.profileFollowingScreen = async function (req, res) {
+    try {
+      let following = await Follow.getFollowingById(req.profileUser._id)
+      res.render('profile-following', {
+        currentPage: "following",
+        following: following,
+        profileUsername: req.profileUser.username,
+        profileAvatar:   req.profileUser.avatar, 
+        isFollowing:     req.isFollowing,
+        isVisitorsProfile: req.isVisitorsProfile,
+        counts: {postCount: req.postCount, followerCount: req.followerCount, followingCount: req.followingCount}
+      })
+    } catch {
+      res.render('404')
+    }
+  }
+
+
+
+
+
+// 293-384   app.js
+
+const express = require('express');
+const session = require('express-session')
+const MongoStore = require('connect-mongo')
+const flash = require('connect-flash')
+const markdown = require('marked');
+const app = express();
+const csrf = require('csurf');
+const sanitizeHTML = require('sanitize-html')
+
+app.use(express.urlencoded({extended: false}));
+app.use(express.json())
+
+app.use('/api', require('./router-api'))
+
+let sessionOptions = session({
+    secret: "JavaScript is cool!",
+    store: MongoStore.create({client: require('./db')}),
+    resave: false,
+    saveUninitialized: false,
+    cookie: {maxAge: 1000 * 60 * 60 * 24, httpOnly: true}
+})
+
+app.use(sessionOptions)
+app.use(flash())
+
+app.use(function (req, res, next) {
+   //make our markdown function available from within ejs templates
+   res.locals.filterUserHTML = function(content) {
+    return sanitizeHTML(markdown.parse(content), {allowedTags: ['p', 'br', 'ul', 'ul', 'strong', 'bold', 'i', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], allowedAttributes: {}})
+}
+   
+    //make all error and success flash messages available from all temptlets
+    res.locals.errors = req.flash('errors')
+    res.locals.success = req.flash('success')
+   // make current user id available on th req object
+   if (req.session.user) {req.visitorId = req.session.user._id} else {req.visitorId = 0}
+   
+    // make user session data available from within view templates
+    res.locals.user = req.session.user
+    next()
+})
+
+const router = require('./router');
+const e = require('connect-flash');
+
+
+app.use (express.static('public'))
+app.set('views', 'views')
+app.set('view engine', 'ejs')
+
+app.use(csrf())
+
+app.use(function(req, res, next) {
+ res.locals.csrfToken = req.csrfToken()
+ next()
+} )
+
+app.use('/', router)
+
+app.use(function (err, req, res, next) {
+ if(err) {
+  if (err.code == "EBADCSRFTOKEN") {
+    req.flash('errors', "Cross site request forgery detected!")
+    req.session.save(() => res.redirect('/')) 
+  } else {
+    res.render('404')
+  }
+ }
+})
+
+const server = require('http').createServer(app)
+
+const io = require('socket.io')(server)
+
+io.use(function(socket, next) {
+    sessionOptions(socket.request, socket.request.res, next)
+})
+
+io.on('connection', function(socket) {
+ if (socket.request.session.user) {
+    let user = socket.request.session.user
+
+    socket.emit('welcome', {username: user.username, avatar: user.avatar})
+
+    socket.on('chatMessageFromBrowser', function(data) {
+      socket.broadcast.emit('chatMessageFromServer', {message: sanitizeHTML(data.message, {allowedTags: [], allowedAttributes: {}}), username: user.username, avatar: user.avatar})
+    })
+ }
+})
+
+module.exports = server
+// app.listen(3000,() => console.log('Serving on port 3000!'))
+
